@@ -2,9 +2,9 @@ import warnings
 import csv
 import streamlit as st
 import yfinance as yf
+import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 
@@ -13,40 +13,54 @@ def calculate_sma(data, window):
     return data['Close'].rolling(window=window).mean()
 
 # Function to check if a stock meets the criteria
-def meets_criteria(data):
+def meets_criteria(data, use_sma, use_price, use_wick):
     if len(data) < 201:
         return False
     
     current_data = data.iloc[-1]
     previous_data = data.iloc[-2]
     
-    # SMA Criteria
-    sma_20 = calculate_sma(data, 20)
-    sma_200 = calculate_sma(data, 200)
+    if use_sma:
+        # SMA Criteria
+        sma_20 = calculate_sma(data, 20)
+        sma_200 = calculate_sma(data, 200)
 
-    if sma_20.iloc[-1] <= sma_200.iloc[-1]:
-        return False
-    if sma_20.iloc[-1] <= sma_20.iloc[-2]:
-        return False
+        if sma_20.iloc[-1] <= sma_200.iloc[-1]:
+            return False
+        if sma_20.iloc[-1] <= sma_20.iloc[-2]:
+            return False
     
-    # Price Criteria
-    if current_data['Close'] > 1.01 * sma_20.iloc[-1]:
-        return False
-    if current_data['Close'] <= current_data['Open']:
-        return False
-    if (current_data['Close'] - current_data['Open']) / current_data['Open'] <= 0.005:
-        return False
+    if use_price:
+        # Price Criteria
+        sma_20 = calculate_sma(data, 20)
+        if current_data['Close'] > 1.01 * sma_20.iloc[-1]:
+            return False
+        if current_data['Close'] <= current_data['Open']:
+            return False
+        if (current_data['Close'] - current_data['Open']) / current_data['Open'] <= 0.005:
+            return False
     
+    if use_wick:
+        # Wick Criteria
+        body = abs(current_data['Close'] - current_data['Open'])
+        upper_wick = current_data['High'] - max(current_data['Close'], current_data['Open'])
+        lower_wick = min(current_data['Close'], current_data['Open']) - current_data['Low']
+        
+        if upper_wick >= 0.2 * body:
+            return False
+        if lower_wick >= 0.2 * body:
+            return False
+
     return True
 
-def process_stock(ticker, start_date, end_date):
+def process_stock(ticker, start_date, end_date, use_sma, use_price, use_wick):
     try:
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        if meets_criteria(data):
-            return ticker
+        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick):
+            return ticker, data
     except Exception as e:
-        pass
-    return None
+        st.error(f"Error processing {ticker}: {str(e)}")
+    return None, None
 
 @st.cache_data
 def fetch_all_companies():
@@ -106,37 +120,51 @@ else:
     start_date = end_date - timedelta(days=365)
     date_range = st.sidebar.date_input("Select date range:", [start_date, end_date])
 
+    # Criteria selection
+    st.sidebar.subheader("Select Criteria")
+    use_sma = st.sidebar.checkbox("SMA Criteria", value=True)
+    use_price = st.sidebar.checkbox("Price Criteria")
+    use_wick = st.sidebar.checkbox("Wick Criteria")
+
+    # Display selected criteria
+    selected_criteria = []
+    if use_sma:
+        selected_criteria.append("SMA")
+    if use_price:
+        selected_criteria.append("Price")
+    if use_wick:
+        selected_criteria.append("Wick")
+    
+    st.sidebar.write(f"Selected criteria: {', '.join(selected_criteria)}")
+
     if st.sidebar.button("Run Screener"):
         if not selected_companies:
             st.warning("Please select at least one company.")
         else:
+            results = {}
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
-            results = []
-            
-            total_stocks = len(selected_companies)
-            processed_stocks = 0
-            
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_stock = {executor.submit(process_stock, ticker, date_range[0], date_range[1]): ticker for ticker in selected_companies}
-                for future in as_completed(future_to_stock):
-                    processed_stocks += 1
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                    
-                    progress_bar.progress(processed_stocks / total_stocks)
-                    status_text.text(f"Processed {processed_stocks}/{total_stocks} stocks. Found {len(results)} matching criteria.")
+
+            for i, ticker in enumerate(selected_companies):
+                ticker, data = process_stock(ticker, date_range[0], date_range[1], use_sma, use_price, use_wick)
+                if ticker and not data.empty:
+                    results[ticker] = data
+                
+                # Update progress
+                progress = (i + 1) / len(selected_companies)
+                progress_bar.progress(progress)
+                status_text.text(f"Processed {i+1}/{len(selected_companies)} stocks. Found {len(results)} matching criteria.")
             
             if results:
                 st.success(f"Found {len(results)} stocks meeting the criteria:")
-                st.write(", ".join(results))
+                st.write(", ".join(results.keys()))
                 
                 # Display detailed results
-                selected_ticker = st.selectbox("Select a stock for detailed view:", results)
+                selected_ticker = st.selectbox("Select a stock for detailed view:", list(results.keys()))
                 
                 if selected_ticker:
-                    data = yf.download(selected_ticker, start=date_range[0], end=date_range[1])
+                    data = results[selected_ticker]
                     sma_20 = calculate_sma(data, 20)
                     sma_200 = calculate_sma(data, 200)
                     
