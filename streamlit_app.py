@@ -82,9 +82,11 @@ def login(username, password):
 # Streamlit app
 st.set_page_config(page_title="Optimized Stock Screener", layout="wide")
 
-# Initialize session state for login
+# Initialize session state for login and results
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'results' not in st.session_state:
+    st.session_state.results = {}
 
 # Login screen
 if not st.session_state.logged_in:
@@ -145,7 +147,7 @@ else:
         if not selected_companies:
             st.warning("Please select at least one company.")
         else:
-            results = {}
+            st.session_state.results = {}
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -153,43 +155,55 @@ else:
             for i, ticker in enumerate(selected_companies):
                 ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick)
                 if ticker and not data.empty:
-                    results[ticker] = data
+                    st.session_state.results[ticker] = data
                 
                 # Update progress
                 progress = (i + 1) / len(selected_companies)
                 progress_bar.progress(progress)
-                status_text.text(f"Processed {i+1}/{len(selected_companies)} stocks. Found {len(results)} matching criteria.")
+                status_text.text(f"Processed {i+1}/{len(selected_companies)} stocks. Found {len(st.session_state.results)} matching criteria.")
             
-            if results:
-                st.success(f"Found {len(results)} stocks meeting the criteria:")
-                st.write(", ".join(results.keys()))
-                
-                # Display detailed results
-                selected_ticker = st.selectbox("Select a stock for detailed view:", list(results.keys()))
-                
-                if selected_ticker:
-                    data = results[selected_ticker]
-                    sma_20 = calculate_sma(data, 20)
-                    sma_200 = calculate_sma(data, 200)
-                    
-                    # Candlestick chart
-                    fig = go.Figure(data=[go.Candlestick(x=data.index,
-                                                         open=data['Open'],
-                                                         high=data['High'],
-                                                         low=data['Low'],
-                                                         close=data['Close'],
-                                                         name="Candlesticks"),
-                                          go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')),
-                                          go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red'))])
-                    
-                    fig.update_layout(title=f"{selected_ticker} Stock Price", xaxis_title="Date", yaxis_title="Price")
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Display last 5 days of data
-                    st.subheader("Last 5 Days of Data")
-                    st.dataframe(data.tail().style.format({"Open": "${:.2f}", "High": "${:.2f}", "Low": "${:.2f}", "Close": "${:.2f}", "Volume": "{:,.0f}"}))
+            if st.session_state.results:
+                st.success(f"Found {len(st.session_state.results)} stocks meeting the criteria:")
+                st.write(", ".join(st.session_state.results.keys()))
             else:
                 st.warning("No stocks found meeting the criteria.")
+
+    # Display detailed results
+    if st.session_state.results:
+        selected_ticker = st.selectbox("Select a stock for detailed view:", list(st.session_state.results.keys()))
+        
+        if selected_ticker:
+            data = st.session_state.results[selected_ticker]
+            sma_20 = calculate_sma(data, 20)
+            sma_200 = calculate_sma(data, 200)
+            
+            # Candlestick chart
+            fig = go.Figure(data=[go.Candlestick(x=data.index,
+                                                 open=data['Open'],
+                                                 high=data['High'],
+                                                 low=data['Low'],
+                                                 close=data['Close'],
+                                                 name="Candlesticks"),
+                                  go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')),
+                                  go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red'))])
+            
+            fig.update_layout(title=f"{selected_ticker} Stock Price", xaxis_title="Date", yaxis_title="Price")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Display last 5 days of data with SMA
+            st.subheader("Last 5 Days of Data (including SMA)")
+            display_data = data.tail().copy()
+            display_data['SMA_20'] = sma_20.tail()
+            display_data['SMA_200'] = sma_200.tail()
+            st.dataframe(display_data.style.format({
+                "Open": "${:.2f}", 
+                "High": "${:.2f}", 
+                "Low": "${:.2f}", 
+                "Close": "${:.2f}", 
+                "Volume": "{:,.0f}",
+                "SMA_20": "${:.2f}",
+                "SMA_200": "${:.2f}"
+            }))
 
     st.markdown("---")
     st.markdown("Created with ❤️ using Streamlit and yfinance")
