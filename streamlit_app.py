@@ -55,7 +55,7 @@ def meets_criteria(data, use_sma, use_price, use_wick):
 
 def process_stock(ticker, end_date, use_sma, use_price, use_wick):
     try:
-        start_date = end_date - timedelta(days=365)  # Fetch 1 year of data to ensure we have enough for 200-day SMA
+        start_date = end_date - timedelta(days=200)  # Fetch exactly 200 days of data
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
         if not data.empty and meets_criteria(data, use_sma, use_price, use_wick):
             return ticker, data
@@ -117,12 +117,12 @@ else:
     if st.sidebar.checkbox("Select All Companies"):
         selected_companies = all_companies
 
-    # Set end date to today and start date to 365 days ago
+    # Set end date to today and start date to 200 days ago
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
+    start_date = end_date - timedelta(days=200)
 
     st.sidebar.write(f"Data range: {start_date.date()} to {end_date.date()}")
-    st.sidebar.write("(Fixed to ensure 200-day SMA calculation)")
+    st.sidebar.write("(Fixed to 200 days for SMA calculation)")
 
     # Criteria selection
     st.sidebar.subheader("Select Criteria")
