@@ -3,6 +3,7 @@ import csv
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
@@ -12,8 +13,24 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 def calculate_sma(data, window):
     return data['Close'].rolling(window=window).mean()
 
+# Function to calculate MACD
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    ema_fast = data['Close'].ewm(span=fast, adjust=False).mean()
+    ema_slow = data['Close'].ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
+# Function to calculate RSI
+def calculate_rsi(data, window=14):
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 # Function to check if a stock meets the criteria
-def meets_criteria(data, use_sma, use_price, use_wick):
+def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, rsi_threshold, ltp_threshold):
     if len(data) < 201:
         return False
     
@@ -51,13 +68,32 @@ def meets_criteria(data, use_sma, use_price, use_wick):
         if lower_wick >= 0.2 * body:
             return False
 
+    if use_macd:
+        # MACD Criteria
+        macd, signal_line = calculate_macd(data)
+        if macd.iloc[-1] <= signal_line.iloc[-1]:
+            return False
+
+    if use_rsi:
+        # RSI Criteria
+        rsi = calculate_rsi(data)
+        if rsi.iloc[-1] <= rsi_threshold:
+            return False
+
+    if use_ltp:
+        # LTP above 20D SMA Criteria
+        sma_20 = calculate_sma(data, 20)
+        ltp_above_sma = (current_data['Close'] - sma_20.iloc[-1]) / sma_20.iloc[-1] * 100
+        if ltp_above_sma <= ltp_threshold:
+            return False
+
     return True
 
-def process_stock(ticker, end_date, use_sma, use_price, use_wick):
+def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, rsi_threshold, ltp_threshold):
     try:
         start_date = end_date - timedelta(days=365)  # Fetch 1 year of data to ensure we have enough for 200-day SMA
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick):
+        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, rsi_threshold, ltp_threshold):
             return ticker, data
     except Exception as e:
         st.error(f"Error processing {ticker}: {str(e)}")
@@ -87,6 +123,8 @@ if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'results' not in st.session_state:
     st.session_state.results = {}
+if 'selected_tickers' not in st.session_state:
+    st.session_state.selected_tickers = []
 
 # Login screen
 if not st.session_state.logged_in:
@@ -131,6 +169,17 @@ else:
     use_sma = st.sidebar.checkbox("SMA Criteria", value=True)
     use_price = st.sidebar.checkbox("Price Criteria")
     use_wick = st.sidebar.checkbox("Wick Criteria")
+    use_macd = st.sidebar.checkbox("MACD Criteria")
+    use_rsi = st.sidebar.checkbox("RSI Criteria")
+    use_ltp = st.sidebar.checkbox("LTP above 20D SMA Criteria")
+
+    # Threshold inputs
+    rsi_threshold = 50
+    ltp_threshold = 10
+    if use_rsi:
+        rsi_threshold = st.sidebar.number_input("RSI Threshold", min_value=0, max_value=100, value=50)
+    if use_ltp:
+        ltp_threshold = st.sidebar.number_input("LTP above 20D SMA Threshold (%)", min_value=0, max_value=100, value=10)
 
     # Display selected criteria
     selected_criteria = []
@@ -140,6 +189,12 @@ else:
         selected_criteria.append("Price")
     if use_wick:
         selected_criteria.append("Wick")
+    if use_macd:
+        selected_criteria.append("MACD")
+    if use_rsi:
+        selected_criteria.append(f"RSI > {rsi_threshold}")
+    if use_ltp:
+        selected_criteria.append(f"LTP > {ltp_threshold}% above 20D SMA")
     
     st.sidebar.write(f"Selected criteria: {', '.join(selected_criteria)}")
 
@@ -153,7 +208,7 @@ else:
             status_text = st.empty()
 
             for i, ticker in enumerate(selected_companies):
-                ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick)
+                ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, rsi_threshold, ltp_threshold)
                 if ticker and not data.empty:
                     st.session_state.results[ticker] = data
                 
@@ -170,40 +225,60 @@ else:
 
     # Display detailed results
     if st.session_state.results:
-        selected_ticker = st.selectbox("Select a stock for detailed view:", list(st.session_state.results.keys()))
+        st.subheader("Detailed Results")
         
-        if selected_ticker:
-            data = st.session_state.results[selected_ticker]
-            sma_20 = calculate_sma(data, 20)
-            sma_200 = calculate_sma(data, 200)
+        for ticker in st.session_state.results.keys():
+            data = st.session_state.results[ticker]
             
-            # Candlestick chart
-            fig = go.Figure(data=[go.Candlestick(x=data.index,
-                                                 open=data['Open'],
-                                                 high=data['High'],
-                                                 low=data['Low'],
-                                                 close=data['Close'],
-                                                 name="Candlesticks"),
-                                  go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')),
-                                  go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red'))])
+            # Create a column layout for the checkbox and graph
+            col1, col2 = st.columns([1, 20])
             
-            fig.update_layout(title=f"{selected_ticker} Stock Price", xaxis_title="Date", yaxis_title="Price")
-            st.plotly_chart(fig, use_container_width=True)
+            # Add a checkbox in the first column
+            with col1:
+                is_selected = st.checkbox("", key=f"select_{ticker}", value=ticker in st.session_state.selected_tickers)
+                if is_selected and ticker not in st.session_state.selected_tickers:
+                    st.session_state.selected_tickers.append(ticker)
+                elif not is_selected and ticker in st.session_state.selected_tickers:
+                    st.session_state.selected_tickers.remove(ticker)
             
-            # Display last 5 days of data with SMA
-            st.subheader("Last 5 Days of Data (including SMA)")
-            display_data = data.tail().copy()
-            display_data['SMA_20'] = sma_20.tail()
-            display_data['SMA_200'] = sma_200.tail()
-            st.dataframe(display_data.style.format({
-                "Open": "${:.2f}", 
-                "High": "${:.2f}", 
-                "Low": "${:.2f}", 
-                "Close": "${:.2f}", 
-                "Volume": "{:,.0f}",
-                "SMA_20": "${:.2f}",
-                "SMA_200": "${:.2f}"
-            }))
+            # Display the graph in the second column
+            with col2:
+                # Prepare the plot data based on selected criteria
+                plot_data = [go.Candlestick(x=data.index,
+                                            open=data['Open'],
+                                            high=data['High'],
+                                            low=data['Low'],
+                                            close=data['Close'],
+                                            name="Candlesticks")]
+                
+                if use_sma:
+                    sma_20 = calculate_sma(data, 20)
+                    sma_200 = calculate_sma(data, 200)
+                    plot_data.append(go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')))
+                    plot_data.append(go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red')))
+                
+                if use_macd:
+                    macd, signal_line = calculate_macd(data)
+                    plot_data.append(go.Scatter(x=data.index, y=macd, name="MACD", line=dict(color='blue')))
+                    plot_data.append(go.Scatter(x=data.index, y=signal_line, name="Signal Line", line=dict(color='red')))
+                
+                if use_rsi:
+                    rsi = calculate_rsi(data)
+                    plot_data.append(go.Scatter(x=data.index, y=rsi, name="RSI", line=dict(color='purple')))
+                
+                if use_ltp:
+                    sma_20 = calculate_sma(data, 20)
+                    ltp_above_sma = ((data['Close'] - sma_20) / sma_20) * 100
+                    plot_data.append(go.Scatter(x=data.index, y=ltp_above_sma, name="LTP above 20D SMA (%)", line=dict(color='green')))
+                
+                # Create and display the plot
+                fig = go.Figure(data=plot_data)
+                fig.update_layout(title=f"{ticker} Stock Price and Selected Indicators", xaxis_title="Date", yaxis_title="Price/Value")
+                st.plotly_chart(fig, use_container_width=True)
+        
+        # Display selected tickers at the bottom
+        st.subheader("Selected Tickers")
+        st.write(", ".join(st.session_state.selected_tickers))
 
     st.markdown("---")
     st.markdown("Created with ❤️ using Streamlit and yfinance")
