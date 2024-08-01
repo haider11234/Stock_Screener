@@ -16,6 +16,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as ReportLabImage
 from reportlab.lib.styles import getSampleStyleSheet
+from cryptography.fernet import Fernet
 
 
 
@@ -145,10 +146,20 @@ def encode_image(image):
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
+
+def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
+
+    f = Fernet(key)
+    decrypted_message = f.decrypt(encrypted_message).decode()
+    return decrypted_message
+
 # Function to perform ChatGPT analysis
 def chatgpt_analysis(image, prompt):
+    key = b'bXlfc3VwZXJfc2VjcmV0X3Bhc3N3b3JkAAAAAAAAAAA='
+    enc = b'gAAAAABmq6-p9GnMYojabe5kf7qtzlldt9QENiov8KJSaf6_Za8F5OH22fjPYmwqCtseXM9IO-Dth8SgHjAmK41zpFR7yEyQRQLtfNO3Y-2gpgRifMv0haNA3-eDColPcRLpGXVtM4baI-RWQVj18ovRRPijGF5nYQ=='
+
     try:
-        client = OpenAI(api_key="sk-proj-eh5AM3DPAgj2Et4uzxQIT3BlbkFJhxQ7gU4QOTbWYicpgsLU")
+        client = OpenAI(api_key=decrypt_message(enc, key))
         MODEL = "gpt-4o"
 
         base64_image = encode_image(image)
@@ -172,9 +183,12 @@ def chatgpt_analysis(image, prompt):
 
 # Function to perform Claude AI analysis
 def claude_analysis(image, prompt):
+    key = b'bXlfc3VwZXJfc2VjcmV0X3Bhc3N3b3JkAAAAAAAAAAA='
+
+    enc = b'gAAAAABmq7Fssh5Hp7yCwi-lpm9In-jvNw1BO1RI5dXm1Sp19V-yFsRBUO-aD8AUamS9xfRRKFFqSwWoUKx_s5ltChFNRbR31_-3-w2xjQsA7yzR7rV2FfFyU3XaJ-Ru80NrncpgO2Xxn_qHrGj9K6wiJn4uiISmwgLVzeEilmb9yo8TldozFOvwdragl6T5mh-8Wd_F6P7lxO-U1HtIDAlruk0wUvRS8A=='
     try:
         client = anthropic.Anthropic(
-            api_key="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",
+            api_key=decrypt_message(enc, key),
         )
 
         image_encode = encode_image(image)
