@@ -17,12 +17,28 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as ReportLabImage
 from reportlab.lib.styles import getSampleStyleSheet
 from cryptography.fernet import Fernet
+import requests
+
 
 
 
 st.set_page_config(page_title="AI-Powered Stock Screener", layout="wide")
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
+
+def fetch_open_interest(ticker):
+    url = f'https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol={ticker}&apikey=2SP6D9RX4PUYOWQA'
+    response = requests.get(url)
+    data = response.json()
+    
+    if 'data' in data:
+        # Sum up all open interest values
+        total_open_interest = sum(int(contract['open_interest']) for contract in data['data'] if 'open_interest' in contract)
+        return total_open_interest
+    else:
+        return None
+
+
 
 # Function to calculate SMAs
 def calculate_sma(data, window):
@@ -104,9 +120,9 @@ def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_lt
 
     if use_open_interest:
         # Open Interest Criteria
-        if 'Open Interest' in data.columns and current_data['Open Interest'] < open_interest_threshold:
+        if 'Open Interest' in data.columns and data['Open Interest'].iloc[-1] < open_interest_threshold:
             return False
-
+            
     if use_volume:
         # Volume Criteria
         if current_data['Volume'] < volume_threshold:
@@ -118,11 +134,20 @@ def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_
     try:
         start_date = end_date - timedelta(days=365)  # Fetch 1 year of data to ensure we have enough for 200-day SMA
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        
+        if use_open_interest:
+            open_interest = fetch_open_interest(ticker)
+            print(open_interest)
+            if open_interest is not None:
+                data['Open Interest'] = open_interest
+        
         if not data.empty and meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold):
             return ticker, data
     except Exception as e:
         st.error(f"Error processing {ticker}: {str(e)}")
     return None, None
+
+
 
 @st.cache_data
 def fetch_all_companies():
@@ -156,7 +181,7 @@ def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
 # Function to perform ChatGPT analysis
 def chatgpt_analysis(image, prompt):
     key = b'bXlfc3VwZXJfc2VjcmV0X3Bhc3N3b3JkAAAAAAAAAAA='
-    enc = b'gAAAAABmq6-p9GnMYojabe5kf7qtzlldt9QENiov8KJSaf6_Za8F5OH22fjPYmwqCtseXM9IO-Dth8SgHjAmK41zpFR7yEyQRQLtfNO3Y-2gpgRifMv0haNA3-eDColPcRLpGXVtM4baI-RWQVj18ovRRPijGF5nYQ=='
+    enc = b'gAAAAABmq8GcHEugg0vzTTkuHlSenaVJ9_Wf26SVw9B_u2hOB8kQlhCDptGVk2UK4G-q80S6JNEPgvTgPy7db_0CHwRyuh1SjE7sz_aeylcXSjTosMYG65SUYLSrk2sRz6qMLpKrqZzDgUg7_B8cnRsCCSK--bWQYw=='
 
     try:
         client = OpenAI(api_key=decrypt_message(enc, key))
@@ -466,10 +491,12 @@ else:
         
         col1, col2 = st.columns(2)
         
-        if use_chatgpt:
+        # Check if there are any ChatGPT results
+        chatgpt_results = {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_chatgpt")}
+        if chatgpt_results:
             chatgpt_pdf = create_ai_analysis_pdf(st.session_state.results, 
-                                                 {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_chatgpt")}, 
-                                                 use_open_interest, use_volume)
+                                                chatgpt_results, 
+                                                use_open_interest, use_volume)
             col1.download_button(
                 label="Download ChatGPT Analysis PDF",
                 data=chatgpt_pdf,
@@ -477,9 +504,11 @@ else:
                 mime="application/pdf"
             )
         
-        if use_claude:
+        # Check if there are any Claude AI results
+        claude_results = {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_claude")}
+        if claude_results:
             claude_pdf = create_ai_analysis_pdf(st.session_state.results, 
-                                                {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_claude")}, 
+                                                claude_results, 
                                                 use_open_interest, use_volume)
             col2.download_button(
                 label="Download Claude AI Analysis PDF",
