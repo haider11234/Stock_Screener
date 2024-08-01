@@ -282,14 +282,22 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
             story.append(Paragraph(f"Volume: {data['Volume'].iloc[-1]}", normal_style))
         
         # Create original colorful candlestick chart
-        fig = go.Figure(data=[go.Candlestick(x=data.index,
-                                             open=data['Open'],
-                                             high=data['High'],
-                                             low=data['Low'],
-                                             close=data['Close'])])
+        plot_data = [go.Candlestick(x=data.index,
+                            open=data['Open'],
+                            high=data['High'],
+                            low=data['Low'],
+                            close=data['Close'],
+                            name="Candlesticks")]
+
+        sma_20 = calculate_sma(data, 20)
+        sma_200 = calculate_sma(data, 200)
+        plot_data.append(go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')))
+        plot_data.append(go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red')))
+
+        fig = go.Figure(data=plot_data)
         fig.update_layout(title=f"{ticker} Stock Chart", 
                           width=800, height=500,
-                          xaxis_rangeslider_visible=False)
+                          xaxis_rangeslider_visible=False, template = "plotly")
         
         # Ensure high quality image
         img_bytes = fig.to_image(format="png", scale=4, engine="kaleido")
@@ -2085,14 +2093,24 @@ Good luck.
                 total_ai_stocks = len(st.session_state.results)
                 status_text.text(f"Performing AI analysis on {total_ai_stocks} stocks...")
                 for i, (ticker, data) in enumerate(st.session_state.results.items()):
-                    fig = go.Figure(data=[go.Candlestick(x=data.index,
-                                                        open=data['Open'],
-                                                        high=data['High'],
-                                                        low=data['Low'],
-                                                        close=data['Close'])])
-                    fig.update_layout(title=f"{ticker} Stock Chart", width=1200, height=800)
+                    plot_data = [go.Candlestick(x=data.index,
+                                                open=data['Open'],
+                                                high=data['High'],
+                                                low=data['Low'],
+                                                close=data['Close'],
+                                                name="Candlesticks")]
+
+                    sma_20 = calculate_sma(data, 20)
+                    sma_200 = calculate_sma(data, 200)
+                    plot_data.append(go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')))
+                    plot_data.append(go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red')))
+
+                    fig = go.Figure(data=plot_data)
+                    fig.update_layout(title=f"{ticker} Stock Chart", width=1200, height=800, template = "plotly")
                     img_bytes = fig.to_image(format="png", scale=2)
+                    # SAve the Image
                     img = Image.open(BytesIO(img_bytes))
+
 
                     if use_chatgpt:
                         status_text.text(f"ChatGPT Analysis: {i+1}/{total_ai_stocks} stocks")
