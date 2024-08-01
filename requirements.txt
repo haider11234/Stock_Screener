@@ -7,3 +7,4 @@ Pillow
 openai
 anthropic
 reportlab
+kaleido
