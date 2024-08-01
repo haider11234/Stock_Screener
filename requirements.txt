@@ -8,3 +8,4 @@ openai
 anthropic
 reportlab
 kaleido
+cryptography
