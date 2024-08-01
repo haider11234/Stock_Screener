@@ -16,7 +16,9 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as ReportLabImage
 from reportlab.lib.styles import getSampleStyleSheet
-import re
+
+
+
 st.set_page_config(page_title="AI-Powered Stock Screener", layout="wide")
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
@@ -296,7 +298,7 @@ if not st.session_state.logged_in:
     if st.button("Login"):
         if login(username, password):
             st.session_state.logged_in = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid username or password")
 else:
@@ -521,4 +523,4 @@ else:
     # Logout button
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
-        st.experimental_rerun()
+        st.rerun()
