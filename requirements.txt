@@ -1,3 +1,9 @@
 streamlit
 yfinance
 plotly
+pandas
+numpy
+Pillow
+openai
+anthropic
+reportlab
