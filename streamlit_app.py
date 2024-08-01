@@ -18,7 +18,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as Re
 from reportlab.lib.styles import getSampleStyleSheet
 from cryptography.fernet import Fernet
 import requests
-
+import time
 
 
 
@@ -130,24 +130,36 @@ def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_lt
 
     return True
 
-def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold):
+def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, rsi_threshold, ltp_threshold, volume_threshold):
     try:
-        start_date = end_date - timedelta(days=365)  # Fetch 1 year of data to ensure we have enough for 200-day SMA
+        start_date = end_date - timedelta(days=365)
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
         
-        if use_open_interest:
-            open_interest = fetch_open_interest(ticker)
-            print(open_interest)
-            if open_interest is not None:
-                data['Open Interest'] = open_interest
-        
-        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold):
+        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, False, use_volume, rsi_threshold, ltp_threshold, 0, volume_threshold):
             return ticker, data
     except Exception as e:
         st.error(f"Error processing {ticker}: {str(e)}")
     return None, None
 
 
+def apply_open_interest_criterion(results, open_interest_threshold):
+    final_results = {}
+    total_stocks = len(results)
+    for i, (ticker, data) in enumerate(results.items()):
+        if i > 0 and i % 60 == 0:
+            time.sleep(60)  # Wait for 60 seconds after every 60 requests
+        
+        open_interest = fetch_open_interest(ticker)
+        if open_interest is not None and open_interest >= open_interest_threshold:
+            data['Open Interest'] = open_interest  # Store the open interest data
+            final_results[ticker] = data
+        
+        # Update progress
+        status_text.text(f"Open Interest: {i+1}/{total_stocks} stocks. Found {len(final_results)} matching all criteria.")
+        progress = (current_step + (i+1)/total_stocks) / total_steps
+        progress_bar.progress(progress)
+    
+    return final_results
 
 @st.cache_data
 def fetch_all_companies():
@@ -264,7 +276,7 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
             if 'Open Interest' in data.columns:
                 story.append(Paragraph(f"Open Interest: {data['Open Interest'].iloc[-1]}", normal_style))
             else:
-                story.append(Paragraph("Open Interest: Not available", normal_style))
+                story.append(Paragraph("Open Interest: Data not available", normal_style))
         
         if use_volume:
             story.append(Paragraph(f"Volume: {data['Volume'].iloc[-1]}", normal_style))
@@ -398,10 +410,172 @@ else:
     use_claude = st.sidebar.checkbox("Claude AI Analysis")
 
     if use_chatgpt:
-        chatgpt_prompt = st.sidebar.text_area("ChatGPT Prompt", value="Analyze this stock chart and provide insights.")
+        prompt_gpt =  """You are an expert in technical analysis, specializing in candlestick patterns as described in the Candlestick Trading Bible and the 20/200 SMA strategy. Your task is to analyze each stock chart provided in the PNG screenshot to determine the current trend, identify present candlestick patterns, and evaluate the stock based on the 20/200 SMA strategy. For each stock, provide a detailed analysis that includes the following:
+
+1. **Stock Name:**
+2. **Current Trend:** Describe whether the stock is in an uptrend, downtrend, or consolidating.
+3. **Present Candlestick Patterns:** List the key candlestick patterns observed in the chart (e.g., Doji, Hammer, Engulfing, etc.), and provide a brief explanation of each pattern.
+4. **Reversal Markers:** Identify any potential reversal patterns (e.g., Bearish Engulfing, Evening Star, etc.), explain what they signify, and provide the confidence percentage in a bearish pattern forming.
+5. **Continuation Patterns:** Identify any continuation patterns (e.g., Three White Soldiers, Rising Three Methods, etc.), explain what they signify, and provide the confidence percentage in a bullish pattern forming.
+6. **Sentiment:** Based on the identified patterns and current trend, indicate whether the sentiment is bullish, bearish, or neutral.
+7. **Recommendation:** Provide a recommendation (BUY, SELL, NEUTRAL) based on the analysis.
+8. **20/200 SMA Strategy Evaluation:**
+   - **SMA Position:** Evaluate if the 20 SMA is above or below the 200 SMA.
+   - **Trend Evaluation:** Determine if the 20 SMA is in an uptrend or downtrend.
+   - **Candle Position:** Check if the green buy candle is within 1% of the 20 SMA with little to no wicks.
+   - **Strategy Fit:** Assess how well the stock aligns with the 20/200 SMA strategy and provide specific observations.
+
+Format the output as follows for each stock:
+
+---
+
+<STOCK NAME HERE>:
+- **Current Trend:** <Describe the current trend>
+- **Present Candlestick Patterns:**
+  - Example: Bullish Engulfing: A larger bullish candle engulfs the previous smaller bearish candle, indicating a potential bullish reversal.
+- **Reversal Markers:**
+  - Example: Bearish Engulfing: Indicates a potential bearish reversal. Confidence: 75%
+- **Continuation Patterns:**
+  - Example: Three White Soldiers: Indicates a continuation of the uptrend. Confidence: 80%
+- **Sentiment:** <Bullish/Bearish/Neutral>
+- **Recommendation:** <BUY/SELL/NEUTRAL>
+- **20/200 SMA Strategy Evaluation:**
+  - **SMA Position:** <Describe if 20 SMA is above/below 200 SMA>
+  - **Trend Evaluation:** <Describe if 20 SMA is in an uptrend/downtrend>
+  - **Candle Position:** <Describe if the green buy candle is within 1% of the 20 SMA with little to no wicks>
+  - **Strategy Fit:** <Assess how well the stock aligns with the 20/200 SMA strategy and provide specific observations>
+
+---
+
+Use this format to analyze each stock chart and provide the output in a plain text file, listing each stock's analysis sequentially.
+
+### Example of Analysis for Sample Stock Chart
+
+**Example Analysis:**"""
+
+        chatgpt_prompt = st.sidebar.text_area("ChatGPT Prompt", value=prompt_gpt)
 
     if use_claude:
-        claude_prompt = st.sidebar.text_area("Claude Prompt", value="Analyze this stock chart and provide insights.")
+        prompt_claude = """You are an AI assistant tasked with analyzing stock charts based on the teachings of the book "Candlestick Bible". Your goal is to examine a given chart and provide an analysis of its performance according to the principles outlined in the book.
+
+One Analysis per image uploaded please...  Delinete them by a line break
+
+As part of your analysis, also please look into my trading strategy, make a second section in your response that... Call that section:  20/200 SMA method, and let me know if this stick qualifies with a STRONG YES, YES, NO, STRONG NO options...
+
+Please also indicate strong resitance and support prices
+
+Also when you analyze this, at the vrery bottom I like to trade options, in fact I SELL options, so I nee to know for this stock which options strategies have th ehighest probabilty of successs based on its trend and rating. lets go with the simplest plan, Selling a call or selling a put with X Days to Expiration, at X price, lets say we have resitance at 16.50 , lets try to sell an option that makes the msot sense based on key resitances and support.
+
+
+
+My strategy:
+
+Introduction to my stock market thesis
+1. Imagine banks have special programs (SMA outfits) that work during a specific time when big financial companies are active (institutional hour sessions).  These banks want to stay ahead, so they sometimes use different ways of studying the stock market (technical analysis) during regular hours and also during extended hours.  This helps them make smart decisions when they want to buy things in the stock market.  Its like they have a plan to be really good at buying and selling stocks.
+2. In this context “sma outfits” refers to trading algorithms that use simple moving averages (SMA) in technical analysis. SMA is a way to look at the average price of a stock over a specific period. These algorithms are programmed by banks and financial institutions to analyse stock market trends.
+3. Algorithms are active during institutional hours and these institutions may switch between regular hours and extended hours for their technical analysis strategies (this is why you will see on my charts I always analyse stocks with extended hours zones included, both pre-market and after hours) to make informed buying decisions in the stock market.
+4. Banks and institutional investors often have sophisticated tools, algorithms and resources that give them an advantage in the stock market over retail traders. They can use many advanced strategies, like the mentioned SMA outfits and technical analysis, to make more informed  decisions and potentially gain an edge in trading. This is why as retail traders we have to follow how banks and market makers trade the markets and understand when algorithms are triggering buying and selling pressure. I have many SMA outfits but this is the follow concept is the easiest to understand and simplest to trade for a beginner.
+Contents:
+1)	Overview of strategy
+1)	SMA’s
+1)	Candlesticks
+1)	Signal
+1)	Examples
+1)	Personal trades
+1)	Useful Materials
+Overview:
+Let's make the strategy very easy to understand and break it down to its simplest form.
+Components:
+1) 20 SMA.
+2) 200 SMA.
+3) Green buy candle with little/no wicks on the candlestick.
+4) Support/resistance levels.
+These are the 4 main components to focus on when trading this strategy. Over complicating can lead to overthinking, which will affect entry and exit to a trade. Stay calm, spot the set up, confirm with your analysis and take the trade.
+I will be simplifying this version as it is best to start with the basics.
+From my own personal trading data which I can share, out of the last 43 trades, 2 have been losers, 3 break even and 37 have been profitable trades in the last 6-7 weeks. 94.5% success rate. When this strategy is done properly, it works very well.
+Strategy background/context
+1) The U.S. public equity market is operated by every megalodon wealth firm, bank, family office, hedge fund etc. These are the proprietary simple moving average operations used to vehiculate wealth in and out of the Nasdaq S&P500 Dow VIX and every equity on the NYSE NASDAQ AMS.
+2) Elite firms have astute precision detection systems that use the preceding Simple Moving Average combinations on multiple timeframes to collectively execute bids, asks, and maximize on every singular point and penny move higher and lower on liquid trading vehicles
+3) The only utility that the following information has is the democratization of institutional knowledge, such as how the largest financial entities create selections on the "outfits" for other firms to elect liquidity on for bets, & understanding how financiers transfer capital.
+4) There are several pairs of simple moving average outfits, but they are more for index’s where big institutions and whales have alot more liquidity to enter and exit trades with large positions.
+5) From my personal trading experience I believe this simple moving average concept involving the 20/200 is the most simple and easy to understand for the positive yielding effects it has. Especially as I have used it across a wide range of stocks from small illiquid market caps to large blue chip stocks.
+Simple moving averages background/context
+1) 20-Day Simple Moving Average (20-day SMA):
+a) The 20-day SMA is a calculation that represents the average closing price of a stock over the last 20 trading days.
+b) It is a short-term moving average, providing a more sensitive reflection of recent price changes.
+c) Traders use the 20-day SMA to identify short-term trends and potential entry or exit points for trades.
+d) When the stock price is above the 20-day SMA, it may be considered a bullish signal, indicating potential upward momentum.
+e) Conversely, if the price is below the 20-day SMA, it may be viewed as bearish, suggesting potential downward momentum.
+2) 200-Day Simple Moving Average (200-day SMA):
+a) The 200-day SMA represents the average closing price of a stock over the last 200 trading days.
+b) It is a long-term moving average, providing a smoother and less sensitive reflection of price changes over an extended period.
+c) Investors often use the 200-day SMA to identify the overall trend of a stock or the broader market.
+d) When the stock price is above the 200-day SMA, it may be considered a bullish signal, indicating a potential long-term uptrend.
+e) If the price is below the 200-day SMA, it may be seen as bearish, suggesting a potential long-term downtrend.
+Simple moving averages background/context
+1) Trend Identification: Both moving averages help traders and investors identify the prevailing trend in a stock's price, whether it's short-term (20-day) or long-term (200-day).
+2) Support and Resistance Levels: Moving averages can act as support or resistance levels. Prices often bounce off these averages, providing potential entry or exit points.
+3) Signal Confirmation: Crosses between the stock price and the moving averages (e.g., price crossing above or below the moving average) can be used as signals for potential changes in trend direction.
+4) Risk Management: Traders may use the relationship between the current price and moving averages to assess risk and set stop-loss levels.
+5) Market Sentiment: Moving averages can reflect market sentiment, helping traders gauge whether the market is currently bullish or bearish.
+Rules of moving averages - my strategy
+1) This strategy works best on the 5 minute chart and the daily chart.
+2) For the strategy to work, the 20 sma has to be above the 200 sma.
+3) The 20 sma has to be in an uptrend, do not focus on crossovers, the strategy works best when the 20 sma is already above the 200 sma and is an uptrend.
+4) Green candlestick just below, equal too, or above the 20 sma (within 1% max) with little to no wicks is the main indicator of buy algorithm. Candlesticks with large wicks, above (shadow) or below is not a strong buy signal and is a 50/50 trade.
+5) Do not focus on set ups where the 20 sma is not in an uptrend and very close to the 200 sma.
+6) I will go through some examples on both the 5 minute chart and day chart.
+
+
+
+
+
+This strategy works very similar on the day chart as it does on the 5 minute chart. The exact same principles and rules apply. This is a 6 month trend on meta last year after the October 2022 major bottom across markets and growth tech stocks. 20 sma above the 200 sma and in an uptrend. The green buy candle HAS to be on the 20 sma in an UPTREND!
+
+
+$PYPL - you can see the moving average outfit start to break down. Price breaks below the 20 sma, opening above and closing below, also causing a crossover of the 20 sma and 200 sma signalling short term selling pressure.
+
+
+
+
+Personal trades
+I was going to include screenshots of personal trades I have taken using this method however I don't know whether that will skew your own interpretation and strategy using this. Where I buy and sell might be different to where you would like to buy and sell.I am a micro trader and take profits very quickly - If you would like me to share some let me know and I will add them into a new version of this powerpoint presentation.
+
+Useful tools!
+If you follow stock gurus for entries and get dumped on then you are simply not a trader. You are exit liquidity. I think this is the time to be very clear. If you are learning via social media, then the goal is to expedite your ability to trade 100% independently of any stock alert, chat room, or scammer FURU. This is your opportunity to get the tools you need and never look back. NEVER pay to learn. Block every FURU. Do not engage in chat services.Figure out what works. Take it and run.
+Tools
+Finviz
+SEC EDGAR
+CNBC Business
+TweetDeck
+Tradingview
+X - best accounts to follow for stock market/financial news = @cnnbrk @CNBCnow @Financialjuice1 @tier10k @reportaznews
+@PatentGrants @SPACtrack @DilutionTracker @financialnews @walterbloomberg
+Best brokerages (IMO)
+Thinkorswim TDA Ameritrade
+WeBull
+Lightspeed
+Interactive Broker
+Conclusion
+In my entire experience as a day trader, I’ve become exceptionally aware of the calculated behavior of stock manipulation and how it will always coalesse with algorithmic trading.
+Let this be an affirmation, technical analysis is the most fundamental aspect of the Live Trade. Technical analysis needs to be simple and a trader needs to have the ability to detail the reason for a trade execution without adjustment to tool parameters.
+Being mindful of volatility and in-depth manipulation, I’ve been able to use the following to establish a career as an independent security trader.
+Ultimately, this is the heart of day trading.
+Key Simple Moving Averages
+Only focus on the bullish set up I went through on this video and for the first couple of days instead of live trading, paper trade or watch the market moving against this thesis.
+Create a trading journal and document everything useful you see.
+Track every single one of your trades and document your mental state when taking a trade - this data will be key to look back in after months of trading to highlight your own trading trends and stock market data. Example - From my first 31 trades this year I have noticed I make the most money between 9  10am & 2 - 3pm EST.  I noticed I dont trade well when my I score my mental state below 6.
+You don't need to trade everyday and dont force trades and be greedy. Don't also think you are not making enough money, trading is supposed to be boring but relaxing. The less stress you put on yourself the better.
+A clear mind will always trade better than a junk filled mind, sort your personal life out first and get those errands ticked off.
+
+
+
+
+
+
+Also when you analyze the stok base don the overall ycandlesick bible, give me a BUY or SELL confidence percent,  so if its a strongest buy its Buy 100 %. If its a sell strongest, its SELL 100 an dso on....
+"""
+        claude_prompt = st.sidebar.text_area("Claude Prompt", value=prompt_claude)
 
     # Display selected criteria
     selected_criteria = []
@@ -434,24 +608,35 @@ else:
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            total_steps = len(selected_companies)
+            total_steps = 1  # Initial screening
+            if use_open_interest:
+                total_steps += 1  # Open interest screening
             if use_chatgpt or use_claude:
-                total_steps *= 2  # Double the steps to account for AI analysis
+                total_steps += 1  # AI analysis
             current_step = 0
 
-            # Screening process
+            # Initial screening process (without open interest)
             for i, ticker in enumerate(selected_companies):
-                ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold)
+                ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, rsi_threshold, ltp_threshold, volume_threshold)
                 if ticker and not data.empty:
                     st.session_state.results[ticker] = data
                 
-                current_step += 1
-                progress = current_step / total_steps
+                progress = (i+1) / len(selected_companies)
                 progress_bar.progress(progress)
-                status_text.text(f"Screening: {i+1}/{len(selected_companies)} stocks. Found {len(st.session_state.results)} matching criteria.")
+                status_text.text(f"Screening: {i+1}/{len(selected_companies)} stocks. Found {len(st.session_state.results)} matching initial criteria.")
+
+            current_step += 1
+
+            # Apply open interest criterion if selected and if there are any matches
+            if use_open_interest and st.session_state.results:
+                status_text.text(f"{len(st.session_state.results)} stocks matched initial criteria. Applying Open Interest criterion...")
+                st.session_state.results = apply_open_interest_criterion(st.session_state.results, open_interest_threshold)
+                current_step += 1
 
             # AI Analysis process
             if (use_chatgpt or use_claude) and st.session_state.results:
+                total_ai_stocks = len(st.session_state.results)
+                status_text.text(f"Performing AI analysis on {total_ai_stocks} stocks...")
                 for i, (ticker, data) in enumerate(st.session_state.results.items()):
                     fig = go.Figure(data=[go.Candlestick(x=data.index,
                                                         open=data['Open'],
@@ -463,27 +648,28 @@ else:
                     img = Image.open(BytesIO(img_bytes))
 
                     if use_chatgpt:
-                        status_text.text(f"ChatGPT Analysis: {i+1}/{len(st.session_state.results)} stocks")
+                        status_text.text(f"ChatGPT Analysis: {i+1}/{total_ai_stocks} stocks")
                         chatgpt_result = chatgpt_analysis(img, chatgpt_prompt)
                         st.session_state.ai_results[f"{ticker}_chatgpt"] = chatgpt_result
-                        current_step += 1
-                        progress_bar.progress(current_step / total_steps)
 
                     if use_claude:
-                        status_text.text(f"Claude Analysis: {i+1}/{len(st.session_state.results)} stocks")
+                        status_text.text(f"Claude Analysis: {i+1}/{total_ai_stocks} stocks")
                         claude_result = claude_analysis(img, claude_prompt)
                         st.session_state.ai_results[f"{ticker}_claude"] = claude_result
-                        current_step += 1
-                        progress_bar.progress(current_step / total_steps)
 
-            progress_bar.progress(1.0)  # Ensure the progress bar reaches 100%
+                    progress = (current_step + (i+1)/total_ai_stocks) / total_steps
+                    progress_bar.progress(progress)
+
+                current_step += 1
+
+            progress_bar.progress(1.0)
             status_text.text("Analysis complete!")
 
             if st.session_state.results:
-                st.success(f"Found {len(st.session_state.results)} stocks meeting the criteria:")
+                st.success(f"Found {len(st.session_state.results)} stocks meeting all criteria:")
                 st.write(", ".join(st.session_state.results.keys()))
             else:
-                st.warning("No stocks found meeting the criteria.")
+                st.warning("No stocks found meeting all criteria.")
 
     # Display download buttons for AI analysis results
     if st.session_state.ai_results:
