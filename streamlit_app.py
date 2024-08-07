@@ -20,8 +20,6 @@ from cryptography.fernet import Fernet
 import requests
 import time
 
-
-
 st.set_page_config(page_title="AI-Powered Stock Screener", layout="wide")
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
@@ -32,19 +30,17 @@ def fetch_open_interest(ticker):
     data = response.json()
     
     if 'data' in data:
-        # Sum up all open interest values
         total_open_interest = sum(int(contract['open_interest']) for contract in data['data'] if 'open_interest' in contract)
         return total_open_interest
     else:
         return None
 
-
-
-# Function to calculate SMAs
 def calculate_sma(data, window):
     return data['Close'].rolling(window=window).mean()
 
-# Function to calculate MACD
+def calculate_intraday_sma(data, window, interval_minutes):
+    return data['Close'].rolling(window=window * interval_minutes).mean()
+
 def calculate_macd(data, fast=12, slow=26, signal=9):
     ema_fast = data['Close'].ewm(span=fast, adjust=False).mean()
     ema_slow = data['Close'].ewm(span=slow, adjust=False).mean()
@@ -52,7 +48,6 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd, signal_line
 
-# Function to calculate RSI
 def calculate_rsi(data, window=14):
     delta = data['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
@@ -60,27 +55,24 @@ def calculate_rsi(data, window=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# Function to check if a stock meets the criteria
-def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold):
-    if len(data) < 201:
+def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_open_interest, use_volume, use_min_price, rsi_threshold, ltp_threshold, open_interest_threshold, volume_threshold, min_price_threshold, sma_20, sma_200, timeframe):
+    if len(data) < 20:
         return False
     
     current_data = data.iloc[-1]
     previous_data = data.iloc[-2]
     
     if use_sma:
-        # SMA Criteria
-        sma_20 = calculate_sma(data, 20)
-        sma_200 = calculate_sma(data, 200)
-
-        if sma_20.iloc[-1] <= sma_200.iloc[-1]:
-            return False
-        if sma_20.iloc[-1] <= sma_20.iloc[-2]:
-            return False
+        if timeframe == "1d":
+            if sma_20.iloc[-1] <= sma_200.iloc[-1]:
+                return False
+            if sma_20.iloc[-1] <= sma_20.iloc[-2]:
+                return False
+        else:
+            if sma_20.iloc[-1] <= sma_200.iloc[-1]:
+                return False
     
     if use_price:
-        # Price Criteria
-        sma_20 = calculate_sma(data, 20)
         if current_data['Close'] > 1.01 * sma_20.iloc[-1]:
             return False
         if current_data['Close'] <= current_data['Open']:
@@ -89,7 +81,6 @@ def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_lt
             return False
     
     if use_wick:
-        # Wick Criteria
         body = abs(current_data['Close'] - current_data['Open'])
         upper_wick = current_data['High'] - max(current_data['Close'], current_data['Open'])
         lower_wick = min(current_data['Close'], current_data['Open']) - current_data['Low']
@@ -100,61 +91,89 @@ def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_lt
             return False
 
     if use_macd:
-        # MACD Criteria
         macd, signal_line = calculate_macd(data)
         if macd.iloc[-1] <= signal_line.iloc[-1]:
             return False
 
     if use_rsi:
-        # RSI Criteria
         rsi = calculate_rsi(data)
         if rsi.iloc[-1] <= rsi_threshold:
             return False
 
     if use_ltp:
-        # LTP above 20D SMA Criteria
         sma_20 = calculate_sma(data, 20)
         ltp_above_sma = (current_data['Close'] - sma_20.iloc[-1]) / sma_20.iloc[-1] * 100
         if ltp_above_sma <= ltp_threshold:
             return False
 
     if use_open_interest:
-        # Open Interest Criteria
         if 'Open Interest' in data.columns and data['Open Interest'].iloc[-1] < open_interest_threshold:
             return False
             
     if use_volume:
-        # Volume Criteria
         if current_data['Volume'] < volume_threshold:
+            return False
+
+    if use_min_price:
+        if current_data['Close'] < min_price_threshold:
             return False
 
     return True
 
-def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, rsi_threshold, ltp_threshold, volume_threshold):
+def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, use_min_price, rsi_threshold, ltp_threshold, volume_threshold, min_price_threshold, timeframe):
     try:
-        start_date = end_date - timedelta(days=365)
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        is_valid, tf = validate_timeframe(timeframe)
+        if not is_valid:
+            st.warning(f"Invalid timeframe '{timeframe}'. Using default '1d'.")
+            tf = "1d"
         
-        if not data.empty and meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, False, use_volume, rsi_threshold, ltp_threshold, 0, volume_threshold):
-            return ticker, data
+        if tf == "1d":
+            period = "1y"
+            interval = "1d"
+            data = yf.download(ticker, period=period, interval=interval)
+
+        else:
+            period = int(tf) // 5
+            interval = "1m"
+
+            data = yf.download(ticker, period=f"{period}d", interval=interval)
+        
+        if data.empty:
+            return None, None, None, None
+
+        data['SMA20'] = data['Close'].rolling(window=20).mean()
+        data['SMA200'] = data['Close'].rolling(window=200).mean()
+
+        if meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, False, use_volume, use_min_price, rsi_threshold, ltp_threshold, 0, volume_threshold, min_price_threshold, data['SMA20'], data['SMA200'], tf):
+            return ticker, data, data['SMA20'], data['SMA200']
+
     except Exception as e:
         st.error(f"Error processing {ticker}: {str(e)}")
-    return None, None
+    return None, None, None, None
 
+def validate_timeframe(timeframe):
+    if timeframe == "1d":
+        return True, "1d"
+    try:
+        tf = int(timeframe)
+        if tf % 5 == 0 and tf > 0:
+            return True, str(tf)
+    except ValueError:
+        pass
+    return False, None
 
 def apply_open_interest_criterion(results, open_interest_threshold):
     final_results = {}
     total_stocks = len(results)
     for i, (ticker, data) in enumerate(results.items()):
         if i > 0 and i % 60 == 0:
-            time.sleep(60)  # Wait for 60 seconds after every 60 requests
+            time.sleep(60)
         
         open_interest = fetch_open_interest(ticker)
         if open_interest is not None and open_interest >= open_interest_threshold:
-            data['Open Interest'] = open_interest  # Store the open interest data
+            data['Open Interest'] = open_interest
             final_results[ticker] = data
         
-        # Update progress
         status_text.text(f"Open Interest: {i+1}/{total_stocks} stocks. Found {len(final_results)} matching all criteria.")
         progress = (current_step + (i+1)/total_stocks) / total_steps
         progress_bar.progress(progress)
@@ -173,24 +192,19 @@ def fetch_all_companies():
     tickers_list = [ticker.replace(".", "-") for ticker in tickers_list]
     return tickers_list
 
-# Login function
 def login(username, password):
     return username == "admin" and password == "pass123"
 
-# Function to encode image to base64
 def encode_image(image):
     buffered = BytesIO()
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-
 def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
-
     f = Fernet(key)
     decrypted_message = f.decrypt(encrypted_message).decode()
     return decrypted_message
 
-# Function to perform ChatGPT analysis
 def chatgpt_analysis(image, prompt):
     key = b'bXlfc3VwZXJfc2VjcmV0X3Bhc3N3b3JkAAAAAAAAAAA='
     enc = b'gAAAAABmq8GcHEugg0vzTTkuHlSenaVJ9_Wf26SVw9B_u2hOB8kQlhCDptGVk2UK4G-q80S6JNEPgvTgPy7db_0CHwRyuh1SjE7sz_aeylcXSjTosMYG65SUYLSrk2sRz6qMLpKrqZzDgUg7_B8cnRsCCSK--bWQYw=='
@@ -218,10 +232,8 @@ def chatgpt_analysis(image, prompt):
     except Exception as e:
         return f"An error occurred with ChatGPT analysis: {str(e)}"
 
-# Function to perform Claude AI analysis
 def claude_analysis(image, prompt):
     key = b'bXlfc3VwZXJfc2VjcmV0X3Bhc3N3b3JkAAAAAAAAAAA='
-
     enc = b'gAAAAABmq7Fssh5Hp7yCwi-lpm9In-jvNw1BO1RI5dXm1Sp19V-yFsRBUO-aD8AUamS9xfRRKFFqSwWoUKx_s5ltChFNRbR31_-3-w2xjQsA7yzR7rV2FfFyU3XaJ-Ru80NrncpgO2Xxn_qHrGj9K6wiJn4uiISmwgLVzeEilmb9yo8TldozFOvwdragl6T5mh-8Wd_F6P7lxO-U1HtIDAlruk0wUvRS8A=='
     try:
         client = anthropic.Anthropic(
@@ -257,8 +269,6 @@ def claude_analysis(image, prompt):
     except Exception as e:
         return f"An error occurred with Claude AI analysis: {str(e)}"
 
-# Function to create AI analysis PDF
-# Modify the create_ai_analysis_pdf function to improve formatting
 def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=20, bottomMargin=20)
@@ -281,7 +291,6 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
         if use_volume:
             story.append(Paragraph(f"Volume: {data['Volume'].iloc[-1]}", normal_style))
         
-        # Create original colorful candlestick chart
         plot_data = [go.Candlestick(x=data.index,
                             open=data['Open'],
                             high=data['High'],
@@ -299,29 +308,23 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
                           width=800, height=500,
                           xaxis_rangeslider_visible=False, template = "plotly")
         
-        # Ensure high quality image
         img_bytes = fig.to_image(format="png", scale=4, engine="kaleido")
         img_stream = BytesIO(img_bytes)
         img = ReportLabImage(img_stream, width=500, height=300)
         story.append(img)
         
         def format_ai_analysis(text):
-            # Split the text into lines
             lines = text.split('\n')
             formatted_text = []
             
             for line in lines:
                 if line.startswith('#'):
-                    # Heading 1
                     formatted_text.append(Paragraph(line.strip('# '), title_style))
                 elif line.startswith('##'):
-                    # Heading 2
                     formatted_text.append(Paragraph(line.strip('# '), subtitle_style))
                 elif line.startswith('*') or line.startswith('-'):
-                    # Bullet points
                     formatted_text.append(Paragraph(f"• {line.strip('* -')}", normal_style))
                 else:
-                    # Normal text
                     formatted_text.append(Paragraph(line, normal_style))
             
             return formatted_text
@@ -339,7 +342,7 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
     doc.build(story)
     buffer.seek(0)
     return buffer
-# Initialize session state
+
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'results' not in st.session_state:
@@ -387,6 +390,13 @@ else:
     st.sidebar.write(f"Data range: {start_date.date()} to {end_date.date()}")
     st.sidebar.write("(Fixed to ensure 200-day SMA calculation)")
 
+    # Timeframe selection
+    use_custom_timeframe = st.sidebar.checkbox("Use Custom Timeframe")
+    if use_custom_timeframe:
+        timeframe = st.sidebar.text_input("Enter timeframe (multiples of 5 or '1d')", value="1d")
+    else:
+        timeframe = "1d"
+
     # Criteria selection
     st.sidebar.subheader("Select Criteria")
     use_sma = st.sidebar.checkbox("SMA Criteria", value=True)
@@ -397,12 +407,14 @@ else:
     use_ltp = st.sidebar.checkbox("LTP above 20D SMA Criteria")
     use_open_interest = st.sidebar.checkbox("Open Interest Criteria", value=True)
     use_volume = st.sidebar.checkbox("Volume Criteria", value=True)
+    use_min_price = st.sidebar.checkbox("Minimum Stock Price Criteria")
 
     # Threshold inputs
     rsi_threshold = 50
     ltp_threshold = 10
     open_interest_threshold = 500
     volume_threshold = 500000
+    min_price_threshold = 1.00
 
     if use_rsi:
         rsi_threshold = st.sidebar.number_input("RSI Threshold", min_value=0, max_value=100, value=50)
@@ -412,55 +424,81 @@ else:
         open_interest_threshold = st.sidebar.number_input("Open Interest Threshold", min_value=0, value=500)
     if use_volume:
         volume_threshold = st.sidebar.number_input("Volume Threshold", min_value=0, value=500000)
+    if use_min_price:
+        min_price_threshold = st.sidebar.number_input("Minimum Stock Price ($)", min_value=0.01, value=1.00, step=0.01)
 
     # AI Analysis options
     use_chatgpt = st.sidebar.checkbox("ChatGPT AI Analysis")
     use_claude = st.sidebar.checkbox("Claude AI Analysis")
 
     if use_chatgpt:
-        prompt_gpt =  """You are an expert in technical analysis, specializing in candlestick patterns as described in the Candlestick Trading Bible and the 20/200 SMA strategy. Your task is to analyze each stock chart provided in the PNG screenshot to determine the current trend, identify present candlestick patterns, and evaluate the stock based on the 20/200 SMA strategy. For each stock, provide a detailed analysis that includes the following:
+        prompt_gpt =  """You are an expert in technical analysis, specializing in candlestick patterns as described in the Candlestick Trading Bible and the 20/200 SMA strategy. Use the principles from the Candlestick Trading Bible and the 20/200 SMA method strictly to analyze each stock. You will be receiving a screenshot of a particular stock. You are to analyze the SMA 20 / SMA 200, and the candlestick patterns based on the principles below and in the Candlestick bible to formulate your percentage of confidence and analysis.  You Must limit your total output response to 2200 total characters, so the whole analysis is visible to me. 
+You will receive the image of a stock chart, it will show in either the 5 minute, 15 minute or 1 day timeframe. Each chart comes with SMA 20 and 200 lines. It shows candlesticks, and it shows price.  Analyze it accordingly, and give your advice and guidance based on the timeframe.  The 20/200 strategy below applies to all timeframes. Use candlestick bible for ALL timeframes too. 
+The 20/200 SMA Strategy:
+Institutional Analysis Context:
+Banks and financial institutions use special algorithms (referred to as "SMA outfits") during specific times, known as institutional hour sessions, to gain an edge in the stock market. They study the market using technical analysis both during regular hours and extended hours, helping them make informed buying decisions.
+SMA Outfits:
+"SMA outfits" are trading algorithms that utilize Simple Moving Averages (SMA) for technical analysis. SMAs calculate the average price of a stock over a specific period. These algorithms, programmed by banks and financial institutions, analyze stock market trends.
+Algorithm Activity:
+These algorithms are active during institutional hours, often switching between regular and extended hours for technical analysis strategies. This is why charts should include both pre-market and after-hours data.
+Institutional Advantage:
+Banks and institutional investors have advanced tools and resources that give them an edge over retail traders. They use strategies like SMA outfits and technical analysis to make more informed decisions. Retail traders need to understand and follow these institutional trading patterns to identify algorithmic buying and selling pressures.
+Strategy Overview:
+Key Components:
+20 SMA.
+200 SMA.
+Green buy candle with little/no wicks.
+Support/resistance levels.
+These four components are crucial for trading this strategy. Overcomplicating can lead to overthinking, affecting trade entry and exit. Stay calm, spot the setup, confirm with your analysis, and take the trade.
+From my personal trading data over the last 6-7 weeks, out of 43 trades, 37 were profitable, 3 break-even, and 2 were losses, resulting in a 94.5% success rate. When executed correctly, this strategy works very well.
+Strategy Background and Context:
+Market Operations:
+The U.S. public equity market is dominated by major wealth firms, banks, family offices, and hedge funds. They use proprietary SMA operations to manage wealth across major indices and equities.
+Precision Detection Systems:
+Elite firms use sophisticated systems that utilize SMA combinations across multiple timeframes to execute precise trades.
+Institutional Knowledge:
+Understanding how large financial entities use SMA outfits can democratize institutional knowledge, helping traders understand liquidity and capital transfer.
+Simple Moving Average Outfits:
+While several SMA outfits exist, they are primarily used for indices with high liquidity. The 20/200 SMA strategy is simple and effective for a wide range of stocks.
+Simple Moving Averages Background:
+20-Day SMA:
+Represents the average closing price over the last 20 trading days.
+Indicates short-term trends and potential entry/exit points.
+Price above the 20-day SMA suggests bullish momentum; below suggests bearish momentum.
+200-Day SMA:
+Represents the average closing price over the last 200 trading days.
+Indicates long-term trends.
+Price above the 200-day SMA suggests a bullish trend; below suggests a bearish trend.
+Utility of Moving Averages:
+Trend identification, support and resistance levels, signal confirmation, risk management, and market sentiment assessment.
+Rules of the Strategy:
+Works best on the 5-minute and daily charts.
+20 SMA must be above the 200 SMA and in an uptrend.
+Focus on green candlesticks near the 20 SMA with little/no wicks.
+Avoid setups where the 20 SMA is not in an uptrend and close to the 200 SMA.
+Example Analysis:
+Analyze each stock chart provided in the PNG screenshot using the following format:
 
-1. **Stock Name:**
-2. **Current Trend:** Describe whether the stock is in an uptrend, downtrend, or consolidating.
-3. **Present Candlestick Patterns:** List the key candlestick patterns observed in the chart (e.g., Doji, Hammer, Engulfing, etc.), and provide a brief explanation of each pattern.
-4. **Reversal Markers:** Identify any potential reversal patterns (e.g., Bearish Engulfing, Evening Star, etc.), explain what they signify, and provide the confidence percentage in a bearish pattern forming.
-5. **Continuation Patterns:** Identify any continuation patterns (e.g., Three White Soldiers, Rising Three Methods, etc.), explain what they signify, and provide the confidence percentage in a bullish pattern forming.
-6. **Sentiment:** Based on the identified patterns and current trend, indicate whether the sentiment is bullish, bearish, or neutral.
-7. **Recommendation:** Provide a recommendation (BUY, SELL, NEUTRAL) based on the analysis.
-8. **20/200 SMA Strategy Evaluation:**
-   - **SMA Position:** Evaluate if the 20 SMA is above or below the 200 SMA.
-   - **Trend Evaluation:** Determine if the 20 SMA is in an uptrend or downtrend.
-   - **Candle Position:** Check if the green buy candle is within 1% of the 20 SMA with little to no wicks.
-   - **Strategy Fit:** Assess how well the stock aligns with the 20/200 SMA strategy and provide specific observations.
-
-Format the output as follows for each stock:
-
----
 
 <STOCK NAME HERE>:
-- **Current Trend:** <Describe the current trend>
-- **Present Candlestick Patterns:**
-  - Example: Bullish Engulfing: A larger bullish candle engulfs the previous smaller bearish candle, indicating a potential bullish reversal.
-- **Reversal Markers:**
-  - Example: Bearish Engulfing: Indicates a potential bearish reversal. Confidence: 75%
-- **Continuation Patterns:**
-  - Example: Three White Soldiers: Indicates a continuation of the uptrend. Confidence: 80%
-- **Sentiment:** <Bullish/Bearish/Neutral>
-- **Recommendation:** <BUY/SELL/NEUTRAL>
-- **20/200 SMA Strategy Evaluation:**
-  - **SMA Position:** <Describe if 20 SMA is above/below 200 SMA>
-  - **Trend Evaluation:** <Describe if 20 SMA is in an uptrend/downtrend>
-  - **Candle Position:** <Describe if the green buy candle is within 1% of the 20 SMA with little to no wicks>
-  - **Strategy Fit:** <Assess how well the stock aligns with the 20/200 SMA strategy and provide specific observations>
-
----
-
-Use this format to analyze each stock chart and provide the output in a plain text file, listing each stock's analysis sequentially.
-
-### Example of Analysis for Sample Stock Chart
-
-**Example Analysis:**"""
-
+For each identified pattern and strategy fit, provide a confidence percentage (e.g., 91%, 75%, etc.) and a short breakdown based on the Candlestick Trading Bible and the 20/200 SMA method. Explain why the confidence level is assigned.
+OVERALL BUY CONFIDENCE - Give me the overall BUY CONFIDENCE % - Pleas be specific, and let me know what supports the score.
+Current Trend: <Describe the current trend>
+Present Candlestick Patterns:
+Example: Bullish Engulfing: A larger bullish candle engulfs the previous smaller bearish candle, indicating a potential bullish reversal.
+Reversal Markers:
+Example: Bearish Engulfing: Indicates a potential bearish reversal. Confidence: 75%
+Continuation Patterns:
+Example: Three White Soldiers: Indicates a continuation of the uptrend. Confidence: 80%
+Sentiment: <Bullish/Bearish/Neutral>
+Recommendation: <BUY/SELL/NEUTRAL>
+20/200 SMA Strategy Evaluation:
+SMA Position: <Describe if 20 SMA is above/below 200 SMA>
+Trend Evaluation: <Describe if 20 SMA is in an uptrend/downtrend>
+Candle Position: <Describe if the green buy candle is within 1% of the 20 SMA with little to no wicks>
+Strategy Fit: <Assess how well the stock aligns with the 20/200 SMA strategy and provide specific observations>
+Confidence Evaluation:
+"""
         chatgpt_prompt = st.sidebar.text_area("ChatGPT Prompt", value=prompt_gpt)
 
     if use_claude:
@@ -2050,6 +2088,8 @@ Good luck.
         selected_criteria.append(f"Open Interest > {open_interest_threshold}")
     if use_volume:
         selected_criteria.append(f"Volume > {volume_threshold}")
+    if use_min_price:
+        selected_criteria.append(f"Price > ${min_price_threshold:.2f}")
     
     st.sidebar.write(f"Selected criteria: {', '.join(selected_criteria)}")
 
@@ -2057,6 +2097,11 @@ Good luck.
         if not selected_companies:
             st.warning("Please select at least one company.")
         else:
+            is_valid, tf = validate_timeframe(timeframe)
+            if not is_valid:
+                st.warning(f"Invalid timeframe '{timeframe}'. Using default '1d'.")
+                timeframe = "1d"
+
             st.session_state.results = {}
             st.session_state.ai_results = {}
             
@@ -2070,11 +2115,15 @@ Good luck.
                 total_steps += 1  # AI analysis
             current_step = 0
 
-            # Initial screening process (without open interest)
+            # Initial screening process
             for i, ticker in enumerate(selected_companies):
-                ticker, data = process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, rsi_threshold, ltp_threshold, volume_threshold)
+                ticker, data, sma_20, sma_200 = process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, use_min_price, rsi_threshold, ltp_threshold, volume_threshold, min_price_threshold, timeframe)
                 if ticker and not data.empty:
-                    st.session_state.results[ticker] = data
+                    st.session_state.results[ticker] = {
+                        'data': data,
+                        'sma_20': sma_20,
+                        'sma_200': sma_200
+                    }
                 
                 progress = (i+1) / len(selected_companies)
                 progress_bar.progress(progress)
@@ -2092,7 +2141,11 @@ Good luck.
             if (use_chatgpt or use_claude) and st.session_state.results:
                 total_ai_stocks = len(st.session_state.results)
                 status_text.text(f"Performing AI analysis on {total_ai_stocks} stocks...")
-                for i, (ticker, data) in enumerate(st.session_state.results.items()):
+                for i, (ticker, ticker_data) in enumerate(st.session_state.results.items()):
+                    data = ticker_data['data']
+                    sma_20 = ticker_data['sma_20']
+                    sma_200 = ticker_data['sma_200']
+
                     plot_data = [go.Candlestick(x=data.index,
                                                 open=data['Open'],
                                                 high=data['High'],
@@ -2100,17 +2153,14 @@ Good luck.
                                                 close=data['Close'],
                                                 name="Candlesticks")]
 
-                    sma_20 = calculate_sma(data, 20)
-                    sma_200 = calculate_sma(data, 200)
                     plot_data.append(go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')))
                     plot_data.append(go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red')))
+
 
                     fig = go.Figure(data=plot_data)
                     fig.update_layout(title=f"{ticker} Stock Chart", width=1200, height=800, template = "plotly")
                     img_bytes = fig.to_image(format="png", scale=2)
-                    # SAve the Image
                     img = Image.open(BytesIO(img_bytes))
-
 
                     if use_chatgpt:
                         status_text.text(f"ChatGPT Analysis: {i+1}/{total_ai_stocks} stocks")
@@ -2121,7 +2171,6 @@ Good luck.
                         status_text.text(f"Claude Analysis: {i+1}/{total_ai_stocks} stocks")
                         claude_result = claude_analysis(img, claude_prompt)
                         st.session_state.ai_results[f"{ticker}_claude"] = claude_result
-                        # Add a 60-second delay after each Claude AI request
                         time.sleep(60)
 
                     progress = (current_step + (i+1)/total_ai_stocks) / total_steps
@@ -2144,7 +2193,6 @@ Good luck.
         
         col1, col2 = st.columns(2)
         
-        # Check if there are any ChatGPT results
         chatgpt_results = {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_chatgpt")}
         if chatgpt_results:
             chatgpt_pdf = create_ai_analysis_pdf(st.session_state.results, 
@@ -2157,7 +2205,6 @@ Good luck.
                 mime="application/pdf"
             )
         
-        # Check if there are any Claude AI results
         claude_results = {k: v for k, v in st.session_state.ai_results.items() if k.endswith("_claude")}
         if claude_results:
             claude_pdf = create_ai_analysis_pdf(st.session_state.results, 
@@ -2175,12 +2222,13 @@ Good luck.
         st.subheader("Detailed Results")
         
         for ticker in st.session_state.results.keys():
-            data = st.session_state.results[ticker]
+            ticker_data = st.session_state.results[ticker]
+            data = ticker_data['data']
+            sma_20 = ticker_data['sma_20']
+            sma_200 = ticker_data['sma_200']
             
-            # Create a column layout for the checkbox and graph
             col1, col2 = st.columns([1, 20])
             
-            # Add a checkbox in the first column
             with col1:
                 is_selected = st.checkbox("", key=f"select_{ticker}", value=ticker in st.session_state.selected_tickers)
                 if is_selected and ticker not in st.session_state.selected_tickers:
@@ -2188,9 +2236,7 @@ Good luck.
                 elif not is_selected and ticker in st.session_state.selected_tickers:
                     st.session_state.selected_tickers.remove(ticker)
             
-            # Display the graph in the second column
             with col2:
-                # Prepare the plot data
                 plot_data = [go.Candlestick(x=data.index,
                                             open=data['Open'],
                                             high=data['High'],
@@ -2198,15 +2244,13 @@ Good luck.
                                             close=data['Close'],
                                             name="Candlesticks")]
                 
-                # Always show SMA 20 and 200
-                sma_20 = calculate_sma(data, 20)
-                sma_200 = calculate_sma(data, 200)
                 plot_data.append(go.Scatter(x=data.index, y=sma_20, name="20 SMA", line=dict(color='blue')))
                 plot_data.append(go.Scatter(x=data.index, y=sma_200, name="200 SMA", line=dict(color='red')))
                 
-                # Create and display the plot
                 fig = go.Figure(data=plot_data)
-                fig.update_layout(title=f"{ticker} Stock Price and SMAs", xaxis_title="Date", yaxis_title="Price")
+                fig.update_layout(title=f"{ticker} Stock Price and SMAs", 
+                                xaxis_title="Date" if timeframe == "1d" else "Time", 
+                                yaxis_title="Price")
                 st.plotly_chart(fig, use_container_width=True)
         
         # Display selected tickers at the bottom
