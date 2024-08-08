@@ -121,6 +121,7 @@ def meets_criteria(data, use_sma, use_price, use_wick, use_macd, use_rsi, use_lt
     return True
 
 def process_stock(ticker, end_date, use_sma, use_price, use_wick, use_macd, use_rsi, use_ltp, use_volume, use_min_price, rsi_threshold, ltp_threshold, volume_threshold, min_price_threshold, timeframe):
+    time.sleep(0.3)
     try:
         is_valid, tf = validate_timeframe(timeframe)
         if not is_valid:
