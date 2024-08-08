@@ -279,7 +279,8 @@ def create_ai_analysis_pdf(results, ai_results, use_open_interest, use_volume):
     subtitle_style = styles['Heading2']
     normal_style = styles['Normal']
 
-    for ticker, data in results.items():
+    for ticker, ticker_data in results.items():
+        data = ticker_data['data']  # Access the DataFrame from the dictionary
         story.append(Paragraph(f"Ticker Name: {ticker}", title_style))
         
         if use_open_interest:
