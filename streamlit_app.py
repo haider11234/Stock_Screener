@@ -27,9 +27,17 @@ st.set_page_config(page_title="AI-Powered Stock Screener", layout="wide")
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 
 def extract_confidence(gpt_response):
-    confidence_pattern = r"(?i)overall\s+buy\s+confidence:\s+(\d+)%"
-    match = re.search(confidence_pattern, gpt_response)
-    return match.group(1) if match else "N/A"
+    confidence_patterns = [
+        r"(?i)overall\s+buy\s+confidence:\s*(\d+)%",
+        r"(?i)overall\s+buy\s+confidence\*{0,2}:\s*(\d+)%"
+    ]
+    
+    for pattern in confidence_patterns:
+        match = re.search(pattern, gpt_response)
+        if match:
+            return match.group(1)
+    
+    return "N/A"
 
 def create_tracker_csv(results, ai_results, timeframe):
     output = StringIO()
