@@ -29,7 +29,8 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 def extract_confidence(gpt_response):
     confidence_patterns = [
         r"(?i)overall\s+buy\s+confidence:\s*(\d+)%",
-        r"(?i)overall\s+buy\s+confidence\*{0,2}:\s*(\d+)%"
+        r"(?i)overall\s+buy\s+confidence\*{0,2}:\s*(\d+)%",
+        r"(?i)overall\s+buy\s+confidence\s*-\s*(\d+)%"
     ]
     
     for pattern in confidence_patterns:
