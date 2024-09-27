@@ -7,6 +7,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import base64
+from io import StringIO
 from io import BytesIO
 from PIL import Image
 from openai import OpenAI
@@ -19,10 +20,34 @@ from reportlab.lib.styles import getSampleStyleSheet
 from cryptography.fernet import Fernet
 import requests
 import time
+import re
 
 st.set_page_config(page_title="AI-Powered Stock Screener", layout="wide")
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
+
+def extract_confidence(gpt_response):
+    confidence_pattern = r"(?i)overall\s+buy\s+confidence:\s+(\d+)%"
+    match = re.search(confidence_pattern, gpt_response)
+    return match.group(1) if match else "N/A"
+
+def create_tracker_csv(results, ai_results, timeframe):
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["TICKER NAME", "TIMEFRAME", "GPT CONFIDENCE PERCENT", "TIME DATE STAMP", "PRICE"])
+    
+    for ticker, ticker_data in results.items():
+        data = ticker_data['data']
+        gpt_result = ai_results.get(f"{ticker}_chatgpt", "")
+        confidence = extract_confidence(gpt_result)
+        latest_data = data.iloc[-1]
+        timestamp = latest_data.name.strftime("%m/%d/%Y %H:%M:%S")
+        price = latest_data['Close']
+        
+        writer.writerow([ticker, timeframe, f"{confidence}%", timestamp, f"{price:.2f}"])
+    
+    return output.getvalue()
+
 
 def fetch_open_interest(ticker):
     url = f'https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol={ticker}&apikey=2SP6D9RX4PUYOWQA'
@@ -434,7 +459,7 @@ else:
     use_claude = st.sidebar.checkbox("Claude AI Analysis")
 
     if use_chatgpt:
-        prompt_gpt =  """You are an expert in technical analysis, specializing in candlestick patterns as described in the Candlestick Trading Bible and the 20/200 SMA strategy. Use the principles from the Candlestick Trading Bible and the 20/200 SMA method strictly to analyze each stock. You will be receiving a screenshot of a particular stock. You are to analyze the SMA 20 / SMA 200, and the candlestick patterns based on the principles below and in the Candlestick bible to formulate your percentage of confidence and analysis.  You Must limit your total output response to 2200 total characters, so the whole analysis is visible to me. 
+        prompt_gpt = """You are an expert in technical analysis, specializing in candlestick patterns as described in the Candlestick Trading Bible and the 20/200 SMA strategy. Use the principles from the Candlestick Trading Bible and the 20/200 SMA method strictly to analyze each stock. You will be receiving a screenshot of a particular stock. You are to analyze the SMA 20 / SMA 200, and the candlestick patterns based on the principles below and in the Candlestick bible to formulate your percentage of confidence and analysis.  You Must limit your total output response to 2200 total characters, so the whole analysis is visible to me. 
 You will receive the image of a stock chart, it will show in either the 5 minute, 15 minute or 1 day timeframe. Each chart comes with SMA 20 and 200 lines. It shows candlesticks, and it shows price.  Analyze it accordingly, and give your advice and guidance based on the timeframe.  The 20/200 strategy below applies to all timeframes. Use candlestick bible for ALL timeframes too. 
 The 20/200 SMA Strategy:
 Institutional Analysis Context:
@@ -2186,6 +2211,16 @@ Good luck.
             if st.session_state.results:
                 st.success(f"Found {len(st.session_state.results)} stocks meeting all criteria:")
                 st.write(", ".join(st.session_state.results.keys()))
+
+                # Add the CSV download button here, after results are processed but before displaying detailed results
+                if use_chatgpt:
+                    csv_data = create_tracker_csv(st.session_state.results, st.session_state.ai_results, timeframe)
+                    st.download_button(
+                        label="Download Tracker CSV",
+                        data=csv_data,
+                        file_name="stock_tracker.csv",
+                        mime="text/csv"
+                    )
             else:
                 st.warning("No stocks found meeting all criteria.")
 
